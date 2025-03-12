@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn.functional as F
 from datasets import load_dataset
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 from accelerate import Accelerator
 import yaml
@@ -17,11 +17,11 @@ config = {
         "seed": 42
     },
     "models": {
-        "teacher": "arcee-ai/Arcee-Spark",
+        "teacher": "Qwen/Qwen2.5-7B",
         "student": "Qwen/Qwen2-1.5B"
     },
     "tokenizer": {
-        "max_length": 4096,
+        "max_length": 512,
         "chat_template": "{% for message in messages %}{% if loop.first and messages[0]['role'] != 'system' %}{{ '<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n' }}{% endif %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
     },
     "training": {
@@ -44,7 +44,7 @@ config = {
         "alpha": 0.5
     },
     "model_config": {
-        "use_flash_attention": True
+        "use_flash_attention": False
     }
     # "spectrum": {
     #     "layers_to_unfreeze": "/workspace/spectrum/snr_results_Qwen-Qwen2-1.5B_unfrozenparameters_50percent.yaml" # You can pass a spectrum yaml file here to freeze layers identified by spectrum.
@@ -95,6 +95,7 @@ original_columns = dataset.column_names
 dataset = dataset.map(sharegpt_format, remove_columns=original_columns)
 
 def tokenize_function(examples):
+    student_tokenizer.padding_side = "left"
     return student_tokenizer(examples["text"], truncation=True, max_length=config["tokenizer"]["max_length"], padding="max_length")
 
 tokenized_dataset = dataset.map(tokenize_function, batched=True, num_proc=8, remove_columns=["text"])
@@ -172,10 +173,10 @@ trainer = LogitsTrainer(
     model=student_model,
     train_dataset=tokenized_dataset["train"],
     eval_dataset=tokenized_dataset["test"],
-    tokenizer=student_tokenizer,
-    args=training_arguments,
-    max_seq_length=config["tokenizer"]["max_length"],
-    dataset_text_field="text",
+    # tokenizer=student_tokenizer,
+    # args=training_arguments,
+    # max_seq_length=config["tokenizer"]["max_length"],
+    # dataset_text_field="text",
 )
 
 # Add the teacher model to the trainer
