@@ -58,88 +58,88 @@ def tokenize_function(examples):
 tokenized_dataset = dataset.map(tokenize_function, batched=True, num_proc=8, remove_columns=["text"])
 tokenized_dataset = tokenized_dataset.train_test_split(test_size=0.1)
 
-# print("Dataset preparation complete. Loading models...")
+print("Dataset preparation complete. Loading models...")
 
-# # Load models with configurable flash attention
-# model_kwargs = {"torch_dtype": torch.bfloat16}
-# if config["model_config"]["use_flash_attention"]:
-#     model_kwargs["attn_implementation"] = "flash_attention_2"
+# Load models with configurable flash attention
+model_kwargs = {"torch_dtype": torch.bfloat16}
+if config["model_config"]["use_flash_attention"]:
+    model_kwargs["attn_implementation"] = "flash_attention_2"
 
-# teacher_model = AutoModelForCausalLM.from_pretrained(config["models"]["teacher"], **model_kwargs)
-# student_model = AutoModelForCausalLM.from_pretrained(config["models"]["student"], **model_kwargs)
+teacher_model = AutoModelForCausalLM.from_pretrained(config["models"]["teacher"], **model_kwargs)
+student_model = AutoModelForCausalLM.from_pretrained(config["models"]["student"], **model_kwargs)
 
-# # Optionally freeze layers of the student model based on spectrum configuration
-# if "spectrum" in config and "layers_to_unfreeze" in config["spectrum"]:
-#     def freeze_student_spectrum(model, unfrozen_layers_file):
-#         with open(unfrozen_layers_file, 'r') as file:
-#             unfrozen_layers = yaml.safe_load(file)['unfrozen_parameters']
+# Optionally freeze layers of the student model based on spectrum configuration
+if "spectrum" in config and "layers_to_unfreeze" in config["spectrum"]:
+    def freeze_student_spectrum(model, unfrozen_layers_file):
+        with open(unfrozen_layers_file, 'r') as file:
+            unfrozen_layers = yaml.safe_load(file)['unfrozen_parameters']
         
-#         for name, param in model.named_parameters():
-#             if not any(layer in name for layer in unfrozen_layers):
-#                 param.requires_grad = False
-#             else:
-#                 param.requires_grad = True
+        for name, param in model.named_parameters():
+            if not any(layer in name for layer in unfrozen_layers):
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
 
-#     # Apply freezing to student model
-#     freeze_student_spectrum(student_model, config["spectrum"]["layers_to_unfreeze"])
-# else:
-#     print("Spectrum configuration not found. All layers of the student model will be trainable.")
+    # Apply freezing to student model
+    freeze_student_spectrum(student_model, config["spectrum"]["layers_to_unfreeze"])
+else:
+    print("Spectrum configuration not found. All layers of the student model will be trainable.")
 
-# def pad_logits(student_logits, teacher_logits):
-#     student_size, teacher_size = student_logits.size(-1), teacher_logits.size(-1)
-#     if student_size != teacher_size:
-#         pad_size = abs(student_size - teacher_size)
-#         pad_tensor = torch.zeros((*teacher_logits.shape[:-1], pad_size), dtype=teacher_logits.dtype, device=teacher_logits.device)
-#         return (torch.cat([student_logits, pad_tensor], dim=-1), teacher_logits) if student_size < teacher_size else (student_logits, torch.cat([teacher_logits, pad_tensor], dim=-1))
-#     return student_logits, teacher_logits
+def pad_logits(student_logits, teacher_logits):
+    student_size, teacher_size = student_logits.size(-1), teacher_logits.size(-1)
+    if student_size != teacher_size:
+        pad_size = abs(student_size - teacher_size)
+        pad_tensor = torch.zeros((*teacher_logits.shape[:-1], pad_size), dtype=teacher_logits.dtype, device=teacher_logits.device)
+        return (torch.cat([student_logits, pad_tensor], dim=-1), teacher_logits) if student_size < teacher_size else (student_logits, torch.cat([teacher_logits, pad_tensor], dim=-1))
+    return student_logits, teacher_logits
 
-# class LogitsTrainer(SFTTrainer):
-#     def compute_loss(self, model, inputs, return_outputs=False):
-#         inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
-#         self.teacher_model = self.teacher_model.to(model.device)
+class LogitsTrainer(SFTTrainer):
+    def compute_loss(self, model, inputs, return_outputs=False):
+        inputs = {k: v.to(model.device) if hasattr(v, 'to') else v for k, v in inputs.items()}
+        self.teacher_model = self.teacher_model.to(model.device)
         
-#         student_model = model.module if hasattr(model, 'module') else model
-#         teacher_model = self.teacher_model.module if hasattr(self.teacher_model, 'module') else self.teacher_model
+        student_model = model.module if hasattr(model, 'module') else model
+        teacher_model = self.teacher_model.module if hasattr(self.teacher_model, 'module') else self.teacher_model
 
-#         student_outputs = student_model(**inputs)
-#         with torch.no_grad():
-#             teacher_outputs = teacher_model(**inputs)
+        student_outputs = student_model(**inputs)
+        with torch.no_grad():
+            teacher_outputs = teacher_model(**inputs)
 
-#         custom_loss = self.distillation_loss(student_outputs.logits, teacher_outputs.logits, inputs, student_outputs.loss)
-#         return (custom_loss, student_outputs) if return_outputs else custom_loss
+        custom_loss = self.distillation_loss(student_outputs.logits, teacher_outputs.logits, inputs, student_outputs.loss)
+        return (custom_loss, student_outputs) if return_outputs else custom_loss
 
-#     def distillation_loss(self, student_logits, teacher_logits, inputs, original_loss):
-#         student_logits, teacher_logits = pad_logits(student_logits.to(self.model.device), teacher_logits.to(self.model.device))
+    def distillation_loss(self, student_logits, teacher_logits, inputs, original_loss):
+        student_logits, teacher_logits = pad_logits(student_logits.to(self.model.device), teacher_logits.to(self.model.device))
         
-#         student_logits_scaled = student_logits / config["distillation"]["temperature"]
-#         teacher_logits_scaled = teacher_logits / config["distillation"]["temperature"]
+        student_logits_scaled = student_logits / config["distillation"]["temperature"]
+        teacher_logits_scaled = teacher_logits / config["distillation"]["temperature"]
 
-#         loss_kd = F.kl_div(
-#             F.log_softmax(student_logits_scaled, dim=-1),
-#             F.softmax(teacher_logits_scaled, dim=-1),
-#             reduction='batchmean'
-#         ) * (config["distillation"]["temperature"] ** 2) / config["tokenizer"]["max_length"]
+        loss_kd = F.kl_div(
+            F.log_softmax(student_logits_scaled, dim=-1),
+            F.softmax(teacher_logits_scaled, dim=-1),
+            reduction='batchmean'
+        ) * (config["distillation"]["temperature"] ** 2) / config["tokenizer"]["max_length"]
 
-#         return config["distillation"]["alpha"] * loss_kd + (1 - config["distillation"]["alpha"]) * original_loss
+        return config["distillation"]["alpha"] * loss_kd + (1 - config["distillation"]["alpha"]) * original_loss
 
-# # Training arguments
-# training_arguments = TrainingArguments(**config["training"])
+# Training arguments
+training_arguments = TrainingArguments(**config["training"])
 
-# # Create the custom SFT Trainer
-# trainer = LogitsTrainer(
-#     model=student_model,
-#     train_dataset=tokenized_dataset["train"],
-#     eval_dataset=tokenized_dataset["test"],
-# )
+# Create the custom SFT Trainer
+trainer = LogitsTrainer(
+    model=student_model,
+    train_dataset=tokenized_dataset["train"],
+    eval_dataset=tokenized_dataset["test"],
+)
 
-# # Add the teacher model to the trainer
-# trainer.teacher_model = teacher_model
+# Add the teacher model to the trainer
+trainer.teacher_model = teacher_model
 
-# # Prepare for distributed training
-# trainer = accelerator.prepare(trainer)
+# Prepare for distributed training
+trainer = accelerator.prepare(trainer)
 
-# # Train the model
-# trainer.train(resume_from_checkpoint=config["training"]["resume_from_checkpoint"])
+# Train the model
+trainer.train(resume_from_checkpoint=config["training"]["resume_from_checkpoint"])
 
-# # Save the final model
-# trainer.save_model(config["training"]["output_dir"])
+# Save the final model
+trainer.save_model(config["training"]["output_dir"])
