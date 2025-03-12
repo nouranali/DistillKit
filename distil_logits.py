@@ -173,10 +173,6 @@ trainer = LogitsTrainer(
     model=student_model,
     train_dataset=tokenized_dataset["train"],
     eval_dataset=tokenized_dataset["test"],
-    # tokenizer=student_tokenizer,
-    # args=training_arguments,
-    # max_seq_length=config["tokenizer"]["max_length"],
-    # dataset_text_field="text",
 )
 
 # Add the teacher model to the trainer
