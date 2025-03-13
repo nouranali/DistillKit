@@ -24,8 +24,8 @@ if "num_samples" in config["dataset"]:
     dataset = dataset.select(range(config["dataset"]["num_samples"]))
 
 # Load tokenizers
-teacher_tokenizer = AutoTokenizer.from_pretrained(config["models"]["teacher"])
-student_tokenizer = AutoTokenizer.from_pretrained(config["models"]["student"])
+teacher_tokenizer = AutoTokenizer.from_pretrained(config["models"]["teacher"]  )
+student_tokenizer = AutoTokenizer.from_pretrained(config["models"]["student"]  )
 
 # Apply chat template to student tokenizer
 student_tokenizer.chat_template = config["tokenizer"]["chat_template"]
@@ -89,12 +89,11 @@ if config["model_config"]["use_flash_attention"]:
     model_kwargs["attn_implementation"] = "flash_attention_2"
 
 teacher_model = AutoModelForCausalLM.from_pretrained(
-    config["models"]["teacher"], **model_kwargs
+    config["models"]["teacher"], **model_kwargs,load_in_8bit=config["model_config"]["load_in_8bit"]
 )
 student_model = AutoModelForCausalLM.from_pretrained(
     config["models"]["student"], **model_kwargs
 )
-
 # Optionally freeze layers of the student model based on spectrum configuration
 if "spectrum" in config and "layers_to_unfreeze" in config["spectrum"]:
 
@@ -138,10 +137,11 @@ class LogitsTrainer(SFTTrainer):
         inputs = {
             k: v.to(model.device) if hasattr(v, "to") else v for k, v in inputs.items()
         }
+        
         self.teacher_model = self.teacher_model.to(model.device)
 
         student_model = model.module if hasattr(model, "module") else model
-        teacher_model = (
+        self.teacher_model = (
             self.teacher_model.module
             if hasattr(self.teacher_model, "module")
             else self.teacher_model
@@ -149,7 +149,7 @@ class LogitsTrainer(SFTTrainer):
 
         student_outputs = student_model(**inputs)
         with torch.no_grad():
-            teacher_outputs = teacher_model(**inputs)
+            teacher_outputs = self.teacher_model(**inputs)
 
         custom_loss = self.distillation_loss(
             student_outputs.logits, teacher_outputs.logits, inputs, student_outputs.loss
@@ -191,6 +191,7 @@ trainer = LogitsTrainer(
 )
 
 # Add the teacher model to the trainer
+teacher_model.eval()
 trainer.teacher_model = teacher_model
 
 # Prepare for distributed training
